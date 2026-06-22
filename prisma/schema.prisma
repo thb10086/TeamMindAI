@@ -1,0 +1,972 @@
+// TeamMindAI · Prisma 数据模型
+// 基于《项目架构设计文档 §8 数据库设计》与《系统SPEC §8 核心数据对象》。
+// 说明：主键采用 cuid() 字符串（比 BIGSERIAL 在 JS/JSON 中更易用）；
+// 状态字段使用枚举增强类型安全；memory / knowledge_chunk 使用 pgvector 向量列。
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+// ============================================================
+// 枚举
+// ============================================================
+enum Priority {
+  P0
+  P1
+  P2
+  P3
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  PAUSED
+  DONE
+  ARCHIVED
+}
+
+enum SystemRole {
+  SUPER_ADMIN
+  COMPANY_ADMIN
+  PROJECT_OWNER
+  PRODUCT_OWNER
+  TECH_OWNER
+  DESIGNER
+  DEVELOPER
+  TESTER
+  OPERATOR
+  SALES
+  GUEST
+}
+
+enum RequirementStatus {
+  IDEA_POOL // 想法池
+  CLARIFYING // 待澄清
+  REVIEWING // 待评审
+  CONFIRMED // 已确认
+  SCHEDULING // 待排期
+  DEVELOPING // 开发中
+  TESTING // 测试中
+  ACCEPTING // 待验收
+  ONLINE // 已上线
+  ARCHIVED // 已归档
+  REJECTED // 已驳回
+  PAUSED // 已暂停
+  MERGED // 已合并
+  SPLIT // 已拆分
+}
+
+enum RequirementSource {
+  MANUAL
+  AI_CHAT
+  MEETING
+  EMAIL
+  WECHAT_WORK
+  FEISHU
+  CUSTOMER_FEEDBACK
+  IMPORT
+}
+
+enum TaskStatus {
+  TODO // 待开始
+  IN_PROGRESS // 进行中
+  INTEGRATING // 待联调
+  TESTING // 待测试
+  ACCEPTING // 待验收
+  DONE // 已完成
+  BLOCKED // 阻塞中
+  CANCELLED // 已取消
+  DELAYED // 延期中
+}
+
+enum TaskType {
+  PRODUCT
+  UI
+  FRONTEND
+  BACKEND
+  ALGORITHM
+  TEST
+  OPS
+  DATA
+  DOC
+  ACCEPTANCE
+}
+
+enum ReviewType {
+  REQUIREMENT
+  TECH
+  RELEASE
+}
+
+enum ReviewResult {
+  PENDING
+  APPROVED
+  RETURNED
+  DEFERRED
+  MERGED
+  SPLIT
+  REJECTED
+}
+
+enum MemoryType {
+  PROJECT_BACKGROUND
+  BUSINESS_RULE
+  HISTORICAL_REQUIREMENT
+  HISTORICAL_DECISION
+  TECH_ARCHITECTURE
+  INTERFACE_DESIGN
+  STAFFING
+  CUSTOMER_FEEDBACK
+  RISK
+  RELEASE_RECORD
+}
+
+/// GraphRAG 图节点的实体类型。
+enum MemoryEntityType {
+  PERSON // 人员/角色
+  REQUIREMENT // 需求
+  TASK // 任务
+  DECISION // 决策
+  FEATURE // 功能/特性
+  MODULE // 模块/系统
+  RISK // 风险
+  RULE // 业务规则
+  CUSTOMER // 客户
+  TECH // 技术/组件
+  METRIC // 指标
+  MEETING // 会议
+  OTHER // 其他
+}
+
+enum KnowledgeCategory {
+  PROJECT
+  BUSINESS
+  TECH
+  CUSTOMER
+  OPS
+  FAQ
+}
+
+enum AgentRole {
+  AI_PRODUCT_MANAGER
+  AI_PROJECT_MANAGER
+  AI_ARCHITECT
+  AI_UX_DESIGNER
+  AI_TEST_ENGINEER
+  AI_MEETING_SECRETARY
+  AI_KNOWLEDGE_MANAGER
+  AI_NOTIFICATION_SECRETARY
+  AI_OPS_ANALYST
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  WECHAT_WORK
+  FEISHU
+  WEBHOOK
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+  CONFIRMED
+}
+
+// ============================================================
+// 组织与用户
+// ============================================================
+model Company {
+  id          String       @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  departments Department[]
+  users       User[]
+  projects    Project[]
+}
+
+model Department {
+  id        String   @id @default(cuid())
+  companyId String?
+  name      String
+  parentId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  company   Company? @relation(fields: [companyId], references: [id])
+  users     User[]
+}
+
+model User {
+  id            String      @id @default(cuid())
+  username      String      @unique
+  email         String?     @unique
+  emailVerified DateTime?
+  name          String?
+  displayName   String?
+  image         String?
+  title         String?
+  passwordHash  String?
+  systemRole    SystemRole  @default(DEVELOPER)
+  isActive      Boolean     @default(true)
+  companyId     String?
+  departmentId  String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  company       Company?    @relation(fields: [companyId], references: [id])
+  department    Department? @relation(fields: [departmentId], references: [id])
+  accounts      Account[]
+  sessions      Session[]
+  memberships   ProjectMember[]
+  assignedTasks Task[]          @relation("TaskAssignee")
+  taskComments  TaskComment[]   @relation("TaskCommentAuthor")
+  designsAssigned Design[]      @relation("DesignAssignee")
+  designsCreated  Design[]      @relation("DesignCreatedBy")
+
+  @@index([companyId])
+  @@index([departmentId])
+}
+
+// ---- Auth.js (next-auth v5) 标准模型 ----
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ============================================================
+// 项目空间
+// ============================================================
+model Project {
+  id                 String        @id @default(cuid())
+  projectCode        String        @unique
+  name               String
+  description        String?
+  businessBackground String?
+  goal               String?
+  status             ProjectStatus @default(PLANNING)
+  priority           Priority      @default(P2)
+  ownerId            String?
+  techOwnerId        String?
+  productOwnerId     String?
+  companyId          String?
+  customer           String?
+  businessLine       String?
+  startDate          DateTime?
+  endDate            DateTime?
+  createdById        String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  company       Company?            @relation(fields: [companyId], references: [id])
+  members       ProjectMember[]
+  versions      ProjectVersion[]
+  requirements  Requirement[]
+  tasks         Task[]
+  reviews       Review[]
+  meetings      Meeting[]
+  decisions     Decision[]
+  memories          Memory[]
+  memoryEntities    MemoryEntity[]
+  memoryRelations   MemoryRelation[]
+  memoryCommunities MemoryCommunity[]
+  knowledgeDocs KnowledgeDoc[]
+  conversations AgentConversation[]
+  notifications Notification[]
+  designs       Design[]
+  asyncJobs     AsyncJob[]
+
+  @@index([companyId])
+  @@index([status])
+}
+
+model ProjectMember {
+  id        String     @id @default(cuid())
+  projectId String
+  userId    String
+  role      SystemRole @default(DEVELOPER)
+  createdAt DateTime   @default(now())
+
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+model ProjectVersion {
+  id        String        @id @default(cuid())
+  projectId String
+  name      String
+  goal      String?
+  status    String        @default("planning")
+  startDate DateTime?
+  endDate   DateTime?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requirements Requirement[]
+
+  @@index([projectId])
+}
+
+// ============================================================
+// 需求
+// ============================================================
+model Requirement {
+  id                 String            @id @default(cuid())
+  requirementCode    String            @unique
+  projectId          String
+  versionId          String?
+  title              String
+  type               String?
+  source             RequirementSource @default(MANUAL)
+  originalContent    String?
+  background         String?
+  problem            String?
+  targetUser         String?
+  businessGoal       String?
+  scope              String?
+  outOfScope         String?
+  userStory          String?
+  acceptanceCriteria String?
+  priority           Priority          @default(P2)
+  expectedOnlineTime DateTime?
+  status             RequirementStatus @default(IDEA_POOL)
+  isAiGenerated      Boolean           @default(false)
+  openQuestions      Int               @default(0)
+  ownerId            String?
+  proposerId         String?
+  createdById        String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  project    Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version    ProjectVersion?         @relation(fields: [versionId], references: [id])
+  tasks      Task[]
+  reviews    Review[]
+  histories  RequirementHistory[]
+  decisions  Decision[]
+  designs    Design[]
+
+  @@index([projectId])
+  @@index([status])
+  @@index([ownerId])
+}
+
+model RequirementHistory {
+  id            String      @id @default(cuid())
+  requirementId String
+  field         String
+  oldValue      String?
+  newValue      String?
+  changedById   String?
+  note          String?
+  createdAt     DateTime    @default(now())
+
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  @@index([requirementId])
+}
+
+// ============================================================
+// 任务
+// ============================================================
+model Task {
+  id                 String       @id @default(cuid())
+  taskCode           String       @unique
+  projectId          String
+  requirementId      String?
+  title              String
+  description        String?
+  taskType           TaskType?
+  suggestedRole      String?
+  assigneeId         String?
+  status             TaskStatus   @default(TODO)
+  priority           Priority     @default(P2)
+  startTime          DateTime?
+  dueTime            DateTime?
+  estimatedHours     Decimal?     @db.Decimal(10, 2)
+  actualHours        Decimal?     @db.Decimal(10, 2)
+  blockedReason      String?
+  acceptanceCriteria String?
+  isAiGenerated      Boolean      @default(false)
+  orderIndex         Int          @default(0)
+  createdById        String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requirement Requirement? @relation(fields: [requirementId], references: [id])
+  assignee    User?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  comments    TaskComment[]
+
+  @@index([projectId])
+  @@index([requirementId])
+  @@index([assigneeId])
+  @@index([status])
+}
+
+model TaskComment {
+  id        String   @id @default(cuid())
+  taskId    String
+  authorId  String?
+  body      String
+  createdAt DateTime @default(now())
+
+  task   Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author User? @relation("TaskCommentAuthor", fields: [authorId], references: [id])
+
+  @@index([taskId])
+}
+
+// ============================================================
+// 异步后台任务（AI 任务拆解 / 界面生成等长任务，离开页面也继续跑）
+// ============================================================
+enum AsyncJobType {
+  REQUIREMENT_BREAKDOWN // 需求 → AI 任务拆解
+  DESIGN_GENERATE // 界面规划 + 逐屏生成
+  MEETING_PROCESS // 会议 → AI 纪要（轻量同步主作业）
+  MEETING_IMAGE // 会议 → 单张配图（汇总图 / 章节图，纪要生成后并行入队）
+}
+
+enum AsyncJobStatus {
+  QUEUED // 已入队，待 worker 领取
+  RUNNING // 执行中
+  SUCCEEDED // 成功
+  FAILED // 失败
+}
+
+model AsyncJob {
+  id            String         @id @default(cuid())
+  projectId     String
+  type          AsyncJobType
+  status        AsyncJobStatus @default(QUEUED)
+  // 关联对象（按 type 解释）：拆解=requirementId；设计=designId；会议=meetingId
+  requirementId String?
+  designId      String?
+  meetingId     String?
+  payload       Json?
+  result        Json?
+  error         String?
+  progress      Int            @default(0) // 0-100
+  total         Int            @default(0) // 分步任务总步数（如逐屏总屏数）
+  completed     Int            @default(0) // 已完成步数
+  attempts      Int            @default(0)
+  createdById   String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([status])
+  @@index([requirementId])
+  @@index([designId])
+  @@index([meetingId])
+}
+
+enum DesignStatus {
+  DRAFT // AI 生成的初始原型
+  DESIGNING // 设计师细化中
+  IN_REVIEW // 评审中
+  APPROVED // 已定稿
+  ARCHIVED // 已归档
+}
+
+// 界面设计：一个需求/项目下的可交互原型集（含多个界面屏）
+model Design {
+  id            String       @id @default(cuid())
+  projectId     String
+  requirementId String?
+  title         String
+  summary       String?
+  status        DesignStatus @default(DRAFT)
+  version       Int          @default(1)
+  assigneeId    String?
+  createdById   String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  project     Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requirement Requirement?   @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+  assignee    User?          @relation("DesignAssignee", fields: [assigneeId], references: [id])
+  createdBy   User?          @relation("DesignCreatedBy", fields: [createdById], references: [id])
+  screens     DesignScreen[]
+
+  @@index([projectId])
+  @@index([requirementId])
+  @@index([assigneeId])
+}
+
+// 单个可交互界面（屏）：存 body 内部 HTML（Tailwind 原子类，沙箱 iframe 渲染）
+model DesignScreen {
+  id         String   @id @default(cuid())
+  designId   String
+  name       String
+  screenKey  String
+  purpose    String?
+  html       String
+  orderIndex Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  design     Design   @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+  @@index([designId])
+}
+
+// ============================================================
+// 评审与决策
+// ============================================================
+model Review {
+  id            String          @id @default(cuid())
+  projectId     String
+  requirementId String?
+  type          ReviewType      @default(REQUIREMENT)
+  result        ReviewResult    @default(PENDING)
+  checklist     Json?
+  aiSummary     String?
+  createdById   String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  project     Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requirement Requirement?    @relation(fields: [requirementId], references: [id])
+  comments    ReviewComment[]
+
+  @@index([projectId])
+  @@index([requirementId])
+}
+
+model ReviewComment {
+  id        String   @id @default(cuid())
+  reviewId  String
+  authorId  String?
+  content   String
+  createdAt DateTime @default(now())
+
+  review    Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@index([reviewId])
+}
+
+model Decision {
+  id            String   @id @default(cuid())
+  projectId     String
+  requirementId String?
+  title         String
+  background    String?
+  content       String?
+  reason        String?
+  rejectedPlans String?
+  participants  String?
+  impact        String?
+  changeable    Boolean  @default(true)
+  confirmed     Boolean  @default(false)
+  decidedById   String?
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requirement Requirement? @relation(fields: [requirementId], references: [id])
+
+  @@index([projectId])
+}
+
+// ============================================================
+// 会议
+// ============================================================
+enum MeetingStatus {
+  DRAFT // 已创建，待 AI 处理
+  TRANSCRIBING // 音频转写 + 说话人识别中
+  PROCESSING // AI 生成纪要/封面图中
+  READY // 纪要已生成
+  FAILED // 生成失败
+}
+
+enum MeetingSource {
+  TEXT // 直接粘贴文本/转写稿
+  AUDIO // 上传音频，经 ASR 转写
+}
+
+model Meeting {
+  id           String        @id @default(cuid())
+  projectId    String
+  title        String
+  meetingTime  DateTime?
+  participants String?
+  rawContent   String? // 文本输入 或 说话人分段后的可读转写
+  sourceType   MeetingSource @default(TEXT)
+  status       MeetingStatus @default(DRAFT)
+
+  // 音频转写（sourceType=AUDIO）
+  audioKey         String? // MinIO 对象 key（上传的原始音频）
+  audioMime        String? // 音频 MIME，如 audio/mp4
+  audioName        String? // 原始文件名
+  durationSec      Float? // 音频时长（秒）
+  transcript       String? // ASR 原始转写全文（未分说话人）
+  transcriptSegments Json? // 说话人分段：[{ speaker, text, start, end }]
+  speakers         Json? // 识别到的说话人：[{ label, name }]
+
+  // AI 纪要
+  aiSummary    String?
+  aiExtraction Json? // { keyPoints[], todos[], decisions[], risks[], requirementChanges[] }
+  // 旧字段（保留向后兼容）：早期版本的封面图 / 提示词。新会议改用 summaryImage* 与 sectionImages。
+  coverImageKey    String?
+  coverImagePrompt String?
+  // 汇总图：会议详情页主图 + 列表卡片缩略图（异步生成，不阻塞纪要可读）。
+  summaryImageKey    String?
+  summaryImagePrompt String?
+  // 章节配图（3-5 张，按 Markdown 二级标题匹配；异步生成）
+  // 形如：[{ heading: "关键讨论", prompt: string, key: string | null }]
+  sectionImages    Json?
+
+  // 串联落库回链（人工确认后写入，避免重复生成）
+  linkedAt     DateTime? // 已生成决策/需求的时间
+
+  createdById  String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+// ============================================================
+// 项目记忆（pgvector）
+// ============================================================
+model Memory {
+  id              String                       @id @default(cuid())
+  projectId       String
+  memoryType      MemoryType
+  title           String?
+  content         String
+  sourceType      String?
+  sourceId        String?
+  importanceScore Float                        @default(0)
+  validityStatus  String                       @default("valid")
+  tags            String?
+  embedding       Unsupported("vector(1536)")?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  project         Project                      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([memoryType])
+}
+
+// ============================================================
+// 项目记忆图谱（GraphRAG：实体 / 关系 / 社区）
+// ============================================================
+
+/// 图节点：从需求/任务/决策/会议等抽取的实体，按「项目+规范名+类型」去重。
+model MemoryEntity {
+  id              String                       @id @default(cuid())
+  projectId       String
+  type            MemoryEntityType             @default(OTHER)
+  name            String
+  normalizedName  String
+  description     String?
+  importanceScore Float                        @default(0)
+  degree          Int                          @default(0)
+  mentionCount    Int                          @default(1)
+  communityId     String?
+  embedding       Unsupported("vector(1536)")?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  project           Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  community         MemoryCommunity? @relation(fields: [communityId], references: [id], onDelete: SetNull)
+  outgoingRelations MemoryRelation[] @relation("RelationSource")
+  incomingRelations MemoryRelation[] @relation("RelationTarget")
+
+  @@unique([projectId, normalizedName, type])
+  @@index([projectId])
+  @@index([communityId])
+  @@index([type])
+}
+
+/// 图边：实体间的有向关系，按「项目+源+目标+类型」去重。
+model MemoryRelation {
+  id             String   @id @default(cuid())
+  projectId      String
+  sourceEntityId String
+  targetEntityId String
+  type           String
+  description    String?
+  weight         Float    @default(1)
+  originType     String?
+  originId       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceEntity MemoryEntity @relation("RelationSource", fields: [sourceEntityId], references: [id], onDelete: Cascade)
+  targetEntity MemoryEntity @relation("RelationTarget", fields: [targetEntityId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, sourceEntityId, targetEntityId, type])
+  @@index([projectId])
+  @@index([sourceEntityId])
+  @@index([targetEntityId])
+}
+
+/// 社区：实体聚类及其 LLM 摘要，用于全局/概览式检索。
+model MemoryCommunity {
+  id              String                       @id @default(cuid())
+  projectId       String
+  level           Int                          @default(0)
+  title           String
+  summary         String
+  importanceScore Float                        @default(0)
+  entityCount     Int                          @default(0)
+  embedding       Unsupported("vector(1536)")?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  entities MemoryEntity[]
+
+  @@index([projectId])
+}
+
+// ============================================================
+// 知识库（pgvector）
+// ============================================================
+model KnowledgeDoc {
+  id          String            @id @default(cuid())
+  projectId   String?
+  title       String
+  category    KnowledgeCategory @default(PROJECT)
+  sourceUrl   String?
+  fileAssetId String?
+  rawContent  String?
+  summary     String?
+  status      String            @default("uploaded")
+  createdById String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  project     Project?          @relation(fields: [projectId], references: [id])
+  chunks      KnowledgeChunk[]
+
+  @@index([projectId])
+  @@index([category])
+}
+
+model KnowledgeChunk {
+  id         String                       @id @default(cuid())
+  docId      String
+  chunkIndex Int
+  content    String
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime                     @default(now())
+
+  doc        KnowledgeDoc                 @relation(fields: [docId], references: [id], onDelete: Cascade)
+
+  @@index([docId])
+}
+
+// ============================================================
+// AI 员工配置 / Prompt / 调用日志 / 对话
+// ============================================================
+model AgentConfig {
+  id                   String    @id @default(cuid())
+  roleType             AgentRole @unique
+  name                 String
+  description          String?
+  model                String?
+  knowledgeScope       Json?
+  tools                Json?
+  requiresHumanApproval Boolean  @default(true)
+  enabled              Boolean   @default(true)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+model AgentPrompt {
+  id           String    @id @default(cuid())
+  roleType     AgentRole
+  name         String
+  version      Int       @default(1)
+  systemPrompt String
+  userTemplate String?
+  outputSchema String?
+  status       String    @default("active")
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([roleType])
+}
+
+model AgentCallLog {
+  id            String    @id @default(cuid())
+  roleType      AgentRole
+  projectId     String?
+  userId        String?
+  action        String?
+  inputSummary  String?
+  contextRefs   Json?
+  modelName     String?
+  promptTokens  Int?
+  completionTokens Int?
+  outputSummary String?
+  success       Boolean   @default(true)
+  errorMessage  String?
+  latencyMs     Int?
+  createdAt     DateTime  @default(now())
+
+  @@index([projectId])
+  @@index([roleType])
+}
+
+model AgentConversation {
+  id        String         @id @default(cuid())
+  projectId String
+  userId    String?
+  agentRole AgentRole      @default(AI_PRODUCT_MANAGER)
+  title     String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  messages  AgentMessage[]
+
+  @@index([projectId])
+}
+
+model AgentMessage {
+  id             String            @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String
+  parts          Json?
+  createdAt      DateTime          @default(now())
+
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+}
+
+// ============================================================
+// 通知
+// ============================================================
+model Notification {
+  id               String              @id @default(cuid())
+  notificationType String
+  channel          NotificationChannel @default(IN_APP)
+  title            String
+  content          String
+  receiverId       String?
+  receiverEmail    String?
+  projectId        String?
+  requirementId    String?
+  taskId           String?
+  status           NotificationStatus  @default(PENDING)
+  needsConfirm     Boolean             @default(false)
+  sendTime         DateTime?
+  readTime         DateTime?
+  failReason       String?
+  createdAt        DateTime            @default(now())
+
+  project          Project?            @relation(fields: [projectId], references: [id])
+
+  @@index([receiverId])
+  @@index([status])
+  @@index([projectId])
+}
+
+model NotificationRule {
+  id            String              @id @default(cuid())
+  name          String
+  eventType     String
+  channel       NotificationChannel @default(EMAIL)
+  templateId    String?
+  conditions    Json?
+  needsConfirm  Boolean             @default(false)
+  enabled       Boolean             @default(true)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+}
+
+// ============================================================
+// 审计与文件
+// ============================================================
+model OperationLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  targetType String?
+  targetId   String?
+  detail     Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([targetType, targetId])
+}
+
+model FileAsset {
+  id           String   @id @default(cuid())
+  filename     String
+  contentType  String?
+  size         Int?
+  storageKey   String
+  uploadedById String?
+  createdAt    DateTime @default(now())
+}
