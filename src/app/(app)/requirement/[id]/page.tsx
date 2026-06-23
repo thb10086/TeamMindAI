@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Sparkles } from "lucide-react";
+import { ArrowLeft, Download, Sparkles } from "lucide-react";
 
 import { requireFullUser, canLeadProject } from "@/lib/access";
 import { getRequirementForUser } from "@/lib/requirements";
@@ -124,11 +124,22 @@ export default async function RequirementDetailPage({
             </Link>
           </p>
         </div>
-        <RequirementManage
-          requirementId={req.id}
-          initial={editInitial}
-          canDelete={canLead}
-        />
+        <div className="flex items-center gap-2">
+          <a
+            href={`/api/requirement/${req.id}/export`}
+            download
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="导出需求文档（Markdown）"
+          >
+            <Download className="size-4" />
+            导出
+          </a>
+          <RequirementManage
+            requirementId={req.id}
+            initial={editInitial}
+            canDelete={canLead}
+          />
+        </div>
       </div>
 
       {req.openQuestions > 0 && (

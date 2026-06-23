@@ -31,7 +31,7 @@ export default async function MeetingPage() {
       participants: m.participants,
       meetingTime: m.meetingTime ? m.meetingTime.toISOString() : null,
       createdAt: m.createdAt.toISOString(),
-      hasCover: Boolean(m.coverImageKey ?? m.summaryImageKey),
+      hasCover: Boolean(m.coverImageKey),
     })
   );
 

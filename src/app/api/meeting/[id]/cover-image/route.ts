@@ -15,9 +15,9 @@ export async function GET(
 
   const meeting = await prisma.meeting.findFirst({
     where: { id, project: { members: { some: { userId: user.id } } } },
-    select: { title: true, coverImageKey: true, summaryImageKey: true },
+    select: { title: true, coverImageKey: true },
   });
-  const key = meeting?.coverImageKey ?? meeting?.summaryImageKey;
+  const key = meeting?.coverImageKey;
   if (!key) {
     return new Response("Not found", { status: 404 });
   }

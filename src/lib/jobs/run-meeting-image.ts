@@ -27,8 +27,7 @@ const SECTION_STYLE =
 
 /**
  * 从结构化纪要数据构建汇总图 prompt。
- * 汇总图要求：信息图/看板风格，包含会议标题、关键要点、决策、待办、风险全部真实内容；
- * 不加"no text"限制，要求模型将文字内容清晰渲染在画面中。
+ * 海报风格：现代商务设计感，类似高端企业年报或会议成果展示板，视觉层次丰富。
  */
 function buildSummaryImagePrompt(data: {
   title: string;
@@ -39,63 +38,89 @@ function buildSummaryImagePrompt(data: {
   todos: Array<{ title: string; suggestedOwner?: string; priority?: string }>;
   risks: string[];
 }): string {
-  const lines: string[] = [];
+  const dateStr = data.meetingTime
+    ? data.meetingTime.toISOString().slice(0, 10)
+    : "";
+  const participants = data.participants?.slice(0, 60) ?? "";
 
-  lines.push(
-    "专业会议汇总信息图卡片。深海军蓝背景。简洁仪表板UI布局，各区块用彩色强调色条分隔，所有文字内容必须全部使用中文，清晰可读。"
-  );
-  lines.push("");
-  lines.push(`标题：「${data.title}」`);
+  const kpCount = data.keyPoints.length;
+  const decCount = data.decisions.length;
+  const todoCount = data.todos.length;
+  const riskCount = data.risks.length;
 
-  const meta: string[] = [];
-  if (data.meetingTime) {
-    meta.push(data.meetingTime.toISOString().slice(0, 10));
-  }
-  if (data.participants) {
-    meta.push(`参会者：${data.participants.slice(0, 60)}`);
-  }
-  if (meta.length) lines.push(meta.join("  |  "));
+  const sub = [
+    dateStr,
+    participants ? `参会：${participants}` : "",
+  ]
+    .filter(Boolean)
+    .join("   |   ");
 
-  if (data.keyPoints.length > 0) {
-    lines.push("");
-    lines.push("【关键要点】蓝色色条：");
-    data.keyPoints.slice(0, 5).forEach((kp, i) => {
-      lines.push(`  ${i + 1}. ${kp.slice(0, 100)}`);
-    });
-  }
+  const statsLine = [
+    kpCount ? `${kpCount} 关键要点` : "",
+    decCount ? `${decCount} 决策` : "",
+    todoCount ? `${todoCount} 待办` : "",
+    riskCount ? `${riskCount} 风险` : "",
+  ]
+    .filter(Boolean)
+    .join("  ·  ");
 
-  if (data.decisions.length > 0) {
-    lines.push("");
-    lines.push("【决策结论】琥珀色条：");
-    data.decisions.slice(0, 3).forEach((d, i) => {
-      lines.push(`  ${i + 1}. ${d.title.slice(0, 100)}`);
-    });
-  }
+  const kpLines = data.keyPoints
+    .slice(0, 4)
+    .map((kp, i) => `      ${i + 1}. ${kp.slice(0, 90)}`)
+    .join("\n");
 
-  if (data.todos.length > 0) {
-    lines.push("");
-    lines.push("【行动待办】绿色色条：");
-    data.todos.slice(0, 4).forEach((t) => {
+  const decLines = data.decisions
+    .slice(0, 3)
+    .map((d, i) => `      ${i + 1}. ${d.title.slice(0, 90)}`)
+    .join("\n");
+
+  const todoLines = data.todos
+    .slice(0, 4)
+    .map((t) => {
       const owner = t.suggestedOwner ? ` [${t.suggestedOwner}]` : "";
       const prio = t.priority ? ` ${t.priority}` : "";
-      lines.push(`  • ${t.title.slice(0, 80)}${prio}${owner}`);
-    });
-  }
+      return `      • ${t.title.slice(0, 75)}${prio}${owner}`;
+    })
+    .join("\n");
 
-  if (data.risks.length > 0) {
-    lines.push("");
-    lines.push("【风险提示】红色色条：");
-    data.risks.slice(0, 2).forEach((r) => {
-      lines.push(`  ⚠ ${r.slice(0, 80)}`);
-    });
-  }
+  const riskLines = data.risks
+    .slice(0, 3)
+    .map((r) => `      ▲ ${r.slice(0, 90)}`)
+    .join("\n");
 
-  lines.push("");
-  lines.push(
-    "视觉风格：专业扁平UI，深色模式仪表板，深色背景白色文字，彩色区块标题栏，简洁无衬线字体，高可读性，信息密集布局，无装饰插图。"
-  );
+  return `横版会议成果海报，宽幅16:10比例，设计感强，类似顶级商业杂志内页或企业年会成果展示板。
 
-  return lines.join("\n");
+【整体风格】
+现代高端商务设计。主背景深邃午夜蓝渐变（#0f1b2d 到 #1a2d4a），带细腻光晕质感，不是纯色块，有层次感。四个内容区块各有独立的高亮强调色：亮蓝、琥珀金、翠绿、珊瑚红。整体留白合理，不拥挤，视觉上像一张精心设计的成果展示海报。
+
+【顶部标题区 — 占高度约20%】
+横向渐变色条（亮蓝 #3b82f6 到紫蓝 #6366f1），左侧配半透明圆形几何光晕装饰。
+居中白色粗体大字标题：「${data.title}」（视觉主焦点，字号大而突出）。
+标题正下方白色小字副标题：${sub || "内部会议"}。
+
+【中部内容区 — 占高度约55%，两列均分，四张卡片】
+每张卡片：圆角矩形，半透明深色背景（#1e2d42 带10%透明度边框），顶部有3px强调色横线+对应图标+中文区块大标题，卡片内容白色细字，行距宽松，卡片之间有明显间距，整体不拥挤。
+
+  卡片1【🔑 关键要点】亮蓝 #3b82f6 顶线：
+${kpLines || "      暂无"}
+
+  卡片2【⚖️ 决策结论】琥珀金 #f59e0b 顶线：
+${decLines || "      暂无"}
+
+  卡片3【✅ 行动待办】翠绿 #10b981 顶线：
+${todoLines || "      暂无"}
+
+  卡片4【⚠️ 风险提示】珊瑚红 #ef4444 顶线：
+${riskLines || "      暂无风险"}
+
+【底部页脚区 — 占高度约25%】
+深色半透明横条，背景略深于主色。左侧：彩色大号数字+白色小字统计标签并排展示（${statsLine || "0 关键要点"}），视觉上像数据仪表板的统计摘要，数字大而突出，标签小而清晰。右侧：淡色细体英文 "TeamMindAI" 品牌标识。
+
+【字体与文字要求】
+全部文字内容使用中文，仅品牌标识允许英文。无衬线现代字体，标题粗体、正文常规细体。所有文字清晰可读，不模糊，不溢出卡片边界，不重叠。
+
+【禁止事项】
+禁止表格样式、禁止行列数据表格、禁止仪表盘风格、禁止写实照片元素。要像一张精美的商务海报，而非数据报表截图。`;
 }
 
 /**
