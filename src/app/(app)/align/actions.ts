@@ -19,6 +19,7 @@ import { retrieveProjectContext } from "@/lib/memory/retrieve";
 import { enqueueMemoryIngest } from "@/lib/queue/memory-queue";
 import { prisma } from "@/lib/db";
 import { requireUser } from "@/lib/auth-helpers";
+import { env } from "@/lib/env";
 
 /** 优先级 → 记忆重要性基线。 */
 const PRIORITY_IMPORTANCE: Record<string, number> = {
@@ -46,6 +47,8 @@ const REQUIREMENT_JSON_HINT = `{
 export interface ChatTurn {
   role: "user" | "assistant" | "system";
   text: string;
+  /** 用户上传的图片 DataURL（仅 user 层写入），直接发给多模态模型。 */
+  images?: string[];
 }
 
 export interface SaveRequirementResult {
@@ -127,9 +130,17 @@ export async function clarifyConversation(input: {
   const agent = getAgent(roleKey);
 
   const transcript = input.messages
-    .filter((m) => m.text.trim().length > 0)
-    .map((m) => `${m.role === "user" ? "用户" : "AI"}：${m.text}`)
+    .filter((m) => m.text.trim().length > 0 || (m.images?.length ?? 0) > 0)
+    .map((m) => {
+      const label = m.role === "user" ? "用户" : "AI";
+      const imgNote = (m.images?.length ?? 0) > 0 ? ` [附带 ${m.images!.length} 张图片]` : "";
+      return `${label}：${m.text}${imgNote}`;
+    })
     .join("\n");
+
+  const allImages = input.messages
+    .filter((m) => m.role === "user" && (m.images?.length ?? 0) > 0)
+    .flatMap((m) => m.images ?? []);
 
   if (!transcript) {
     return {
@@ -159,6 +170,93 @@ export async function clarifyConversation(input: {
       if (!ctx.isEmpty) memoryContext = ctx.text;
     } catch {
       // 检索失败不阻断澄清
+    }
+  }
+
+  // ── 有图片时：改用多模态直接请求，跳过 AI SDK 的转探层 ───────────────────
+  if (allImages.length > 0) {
+    const jsonSystemSuffix = `\n\n输出要求：仅返回一个 JSON 对象，禁止任何解释文字或 Markdown 代码块标记。`;
+    const mainPrompt = `你正在与用户进行「需求澄清」对话。用户附带了图片（如截图、原型图、文档拍照等）作为需求输入，请结合图片内容进行澄清。
+规则：
+- 优先用「选择题」降低用户输入成本：凡是能枚举的，给 2-5 个具体 options，用 single（单选）或 multi（多选）。
+- 仅当问题确实开放、无法枚举时才用 text（填空）。allowCustom 统一设为 true。
+- 一轮聚焦最关键的 3-6 个问题，循序渐进。
+- 【必须】为每个问题给出 AI 推荐答案（recommended）与一句话理由（recommendReason）。
+- 当信息已足够生成标准需求卡片时，questions 返回空数组 []，ready 设为 true。
+- reply 用简洁中文，可用 Markdown。
+
+# 项目上下文
+${projectContext || "（暂无，按通用产品需求澄清）"}
+
+# 项目记忆（不得据此编造未提及的信息）
+${memoryContext || "（暂无相关记忆）"}
+
+# 对话记录
+${transcript}
+
+# 必须严格遵循的输出 JSON 结构
+${CLARIFY_JSON_HINT}`;
+
+    const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+      { type: "text", text: mainPrompt },
+      ...allImages.map((img) => ({ type: "image_url", image_url: { url: img } })),
+    ];
+
+    try {
+      const apiResp = await fetch(`${env.agentllm.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${env.agentllm.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: env.agentllm.visionModel,
+          max_tokens: 3000,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: `${agent.systemPrompt}${jsonSystemSuffix}` },
+            { role: "user", content },
+          ],
+        }),
+      });
+
+      if (!apiResp.ok) {
+        const errBody = await apiResp.text().catch(() => apiResp.statusText);
+        throw new Error(`视觅 API 返回 ${apiResp.status}: ${errBody.slice(0, 200)}`);
+      }
+
+      const data = (await apiResp.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const rawText = data.choices?.[0]?.message?.content ?? "";
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        const s = rawText.indexOf("{");
+        const e = rawText.lastIndexOf("}");
+        if (s === -1 || e === -1) throw new Error("Vision 响应中未找到 JSON");
+        parsed = JSON.parse(rawText.slice(s, e + 1));
+      }
+
+      const turn = ClarifyTurnSchema.parse(parsed);
+      return {
+        reply: turn.reply,
+        questions: turn.questions,
+        ready: turn.ready,
+        references: turn.references,
+        conflicts: turn.conflicts,
+      };
+    } catch {
+      return {
+        reply: "",
+        questions: [],
+        ready: false,
+        references: [],
+        conflicts: [],
+        error: "AI 图片澄清失败，请稍后重试，或直接输入文字描述需求。",
+      };
     }
   }
 

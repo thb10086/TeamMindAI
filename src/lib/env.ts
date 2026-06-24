@@ -20,6 +20,7 @@ export const env = {
       process.env.AGENTLLM_EMBEDDING_MODEL ?? "text-embedding-3-large",
     embeddingDim: Number(process.env.AGENTLLM_EMBEDDING_DIM ?? 1536),
     imageModel: process.env.AGENTLLM_IMAGE_MODEL ?? "gpt-image-2",
+    visionModel: process.env.AGENTLLM_VISION_MODEL ?? "gpt-4o-mini",
   },
 
   // 语音转写（ASR）。AgentLLM 网关暂不提供 transcriptions，故走兼容 OpenAI 的

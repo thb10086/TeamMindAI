@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -9,14 +9,19 @@ import {
   Check,
   ExternalLink,
   FileCheck2,
+  FileText,
   Globe,
+  ImageIcon,
   Lightbulb,
+  Loader2,
+  Paperclip,
   RotateCcw,
   Save,
   Send,
   Sparkles,
   TrendingUp,
   User,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -62,8 +67,22 @@ interface Turn {
   ready?: boolean;
   /** 本轮依据的项目记忆要点（GraphRAG）。 */
   references?: string[];
-  /** 与既有需求/决策的潜在冲突点，需人工确认。 */
+  /** 与既有需求/决策的潜在决点，需人工确认。 */
   conflicts?: string[];
+  /** 用户附带的图片 DataURL，直接发给 AI 模型。 */
+  images?: string[];
+}
+
+interface Attachment {
+  id: string;
+  name: string;
+  /** 提取的文本内容（文档类）。 */
+  content: string;
+  /** 图片类的 DataURL，直接随对话发给 AI。 */
+  dataUrl?: string;
+  kind: "image" | "text";
+  analyzing: boolean;
+  error?: string;
 }
 
 /** 本地持久化的对齐草稿快照。 */
@@ -122,6 +141,8 @@ export function AlignRoom({
   const [research, setResearch] = useState<CompetitorResearchResult | null>(
     null
   );
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 当前激活问题集（最后一条 assistant turn）的作答状态
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
@@ -156,7 +177,13 @@ export function AlignRoom({
         localStorage.removeItem(STORAGE_KEY);
         return;
       }
-      const payload: PersistedDraft = { turns, answers, customs, projectId };
+      // 存入 localStorage 前去掉 images（base64 过大会超额）
+      const payload: PersistedDraft = {
+        turns: turns.map((t) => ({ ...t, images: undefined })),
+        answers,
+        customs,
+        projectId,
+      };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
       // 忽略写入失败（隐私模式/超额）
@@ -203,7 +230,7 @@ export function AlignRoom({
           .join("\n");
         return { role: "assistant", text: `${t.text}\n${qs}` };
       }
-      return { role: t.role, text: t.text };
+      return { role: t.role, text: t.text, images: t.images };
     });
   }
 
@@ -240,13 +267,102 @@ export function AlignRoom({
     setLoading(false);
   }
 
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    e.target.value = "";
+
+    for (const file of files) {
+      const id = `att-${Date.now()}-${Math.random()}`;
+      const isImage = file.type.startsWith("image/");
+      const att: Attachment = {
+        id,
+        name: file.name,
+        content: "",
+        kind: isImage ? "image" : "text",
+        analyzing: true,
+      };
+      setAttachments((prev) => [...prev, att]);
+
+      if (isImage) {
+        // 图片客户端直接读为 DataURL，随对话发给 AI，不需走服务端
+        const reader = new FileReader();
+        reader.onload = () => {
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.id === id
+                ? { ...a, analyzing: false, dataUrl: reader.result as string }
+                : a
+            )
+          );
+        };
+        reader.onerror = () => {
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.id === id ? { ...a, analyzing: false, error: "图片读取失败" } : a
+            )
+          );
+        };
+        reader.readAsDataURL(file);
+      } else {
+        // 文档类走服务端提取文本
+        const form = new FormData();
+        form.append("file", file);
+        fetch("/api/align/analyze-attachment", { method: "POST", body: form })
+          .then((res) => res.json() as Promise<{ content?: string; error?: string }>)
+          .then((json) => {
+            setAttachments((prev) =>
+              prev.map((a) =>
+                a.id === id
+                  ? json.error
+                    ? { ...a, analyzing: false, error: json.error }
+                    : { ...a, analyzing: false, content: json.content ?? "" }
+                  : a
+              )
+            );
+          })
+          .catch(() => {
+            setAttachments((prev) =>
+              prev.map((a) =>
+                a.id === id ? { ...a, analyzing: false, error: "文档解析失败，请重试" } : a
+              )
+            );
+          });
+      }
+    }
+  }
+
   function sendText(text: string) {
     const value = text.trim();
-    if (!value || loading) return;
-    const userTurn: Turn = { id: nextId(), role: "user", text: value };
+    const readyTextAtts = attachments.filter(
+      (a) => !a.analyzing && !a.error && a.kind === "text" && a.content
+    );
+    const readyImageAtts = attachments.filter(
+      (a) => !a.analyzing && !a.error && a.kind === "image" && a.dataUrl
+    );
+
+    if (!value && readyTextAtts.length === 0 && readyImageAtts.length === 0) return;
+    if (loading) return;
+
+    // 文档附件内容作为文字前置上下文
+    const parts: string[] = [];
+    for (const att of readyTextAtts) {
+      parts.push(`【附件：${att.name}】\n${att.content}`);
+    }
+    if (value) parts.push(value);
+    const combined = parts.join("\n\n---\n\n");
+
+    const imgCount = readyImageAtts.length;
+    const userTurn: Turn = {
+      id: nextId(),
+      role: "user",
+      text: combined || (imgCount > 0 ? `（附图 ${imgCount} 张）` : ""),
+      images: imgCount > 0 ? readyImageAtts.map((a) => a.dataUrl!) : undefined,
+    };
     const history = [...turns, userTurn];
     setTurns(history);
     setInput("");
+    setAttachments([]);
     void runClarify(history);
   }
 
@@ -493,7 +609,26 @@ export function AlignRoom({
                         : "border bg-background"
                     )}
                   >
-                    {t.role === "user" ? t.text : <Markdown content={t.text} />}
+                    {t.role === "user" ? (
+                      <>
+                        {t.text}
+                        {(t.images?.length ?? 0) > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {t.images!.map((img, idx) => (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                key={idx}
+                                src={img}
+                                alt=""
+                                className="max-h-32 w-auto max-w-[180px] rounded-lg object-cover opacity-90"
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <Markdown content={t.text} />
+                    )}
                   </div>
                 </div>
 
@@ -603,7 +738,72 @@ export function AlignRoom({
 
         {/* 输入区 */}
         <div className="border-t p-3">
+          {/* 附件 chips */}
+          {attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {attachments.map((att) => (
+                <div
+                  key={att.id}
+                  className={cn(
+                    "inline-flex max-w-[220px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+                    att.error
+                      ? "border-destructive/40 bg-destructive/5 text-destructive"
+                      : "border-border bg-muted/60 text-foreground"
+                  )}
+                >
+                  {att.analyzing ? (
+                    <Loader2 className="size-3 shrink-0 animate-spin text-primary" />
+                  ) : att.error ? (
+                    <AlertTriangle className="size-3 shrink-0" />
+                  ) : att.kind === "image" && att.dataUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={att.dataUrl} alt="" className="size-5 shrink-0 rounded object-cover" />
+                  ) : att.kind === "image" ? (
+                    <ImageIcon className="size-3 shrink-0 text-primary" />
+                  ) : (
+                    <FileText className="size-3 shrink-0 text-primary" />
+                  )}
+                  <span className="min-w-0 truncate">
+                    {att.analyzing
+                      ? att.kind === "image"
+                        ? `读取中…${att.name}`
+                        : `解析中…${att.name}`
+                      : att.error
+                        ? att.error
+                        : att.name}
+                  </span>
+                  <button
+                    onClick={() =>
+                      setAttachments((prev) => prev.filter((a) => a.id !== att.id))
+                    }
+                    className="ml-0.5 shrink-0 rounded-full p-0.5 hover:bg-muted"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="flex items-end gap-2">
+            {/* 隐藏的文件选择器 */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.doc,.docx,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.xml,.log"
+              className="hidden"
+              onChange={handleFileSelect}
+            />
+            <Button
+              size="icon"
+              variant="outline"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+              title="上传文档或图片（支持 PNG/JPG/WEBP/GIF / PDF / Word .docx / TXT/MD/CSV/JSON）"
+              className="shrink-0"
+            >
+              <Paperclip className="size-4" />
+            </Button>
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -613,7 +813,7 @@ export function AlignRoom({
                   sendText(input);
                 }
               }}
-              placeholder="描述你的想法，或补充选项之外的信息。Enter 发送，Shift+Enter 换行…"
+              placeholder="描述你的想法，或上传文档/截图辅助对齐。Enter 发送，Shift+Enter 换行…"
               className="max-h-40 min-h-11 flex-1 resize-none"
               rows={1}
               disabled={loading}
@@ -621,7 +821,10 @@ export function AlignRoom({
             <Button
               size="icon"
               onClick={() => sendText(input)}
-              disabled={loading || !input.trim()}
+              disabled={
+                loading ||
+                (!input.trim() && attachments.every((a) => a.analyzing || !!a.error))
+              }
             >
               <Send className="size-4" />
             </Button>
