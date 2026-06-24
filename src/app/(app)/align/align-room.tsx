@@ -8,6 +8,7 @@ import {
   Brain,
   Check,
   ExternalLink,
+  Eye,
   FileCheck2,
   FileText,
   Globe,
@@ -71,6 +72,8 @@ interface Turn {
   conflicts?: string[];
   /** 用户附带的图片 DataURL，直接发给 AI 模型。 */
   images?: string[];
+  /** 用户附带的文档附件（内容发给 AI，聊天界面只展示卡片）。 */
+  docs?: Array<{ name: string; content: string }>;
 }
 
 interface Attachment {
@@ -142,6 +145,9 @@ export function AlignRoom({
     null
   );
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState<{ name: string; content: string } | null>(null);
+  const dragCounterRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 当前激活问题集（最后一条 assistant turn）的作答状态
@@ -230,7 +236,15 @@ export function AlignRoom({
           .join("\n");
         return { role: "assistant", text: `${t.text}\n${qs}` };
       }
-      return { role: t.role, text: t.text, images: t.images };
+      // 文档内容拼入消息发给 AI，聊天界面只展示卡片
+      let textForAI = t.text;
+      if (t.docs?.length) {
+        const docBlock = t.docs
+          .map((d) => `【附件：${d.name}】\n${d.content}`)
+          .join("\n\n---\n\n");
+        textForAI = t.text ? `${docBlock}\n\n---\n\n${t.text}` : docBlock;
+      }
+      return { role: t.role, text: textForAI, images: t.images };
     });
   }
 
@@ -267,11 +281,8 @@ export function AlignRoom({
     setLoading(false);
   }
 
-  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
+  function processFiles(files: File[]) {
     if (!files.length) return;
-    e.target.value = "";
-
     for (const file of files) {
       const id = `att-${Date.now()}-${Math.random()}`;
       const isImage = file.type.startsWith("image/");
@@ -332,6 +343,32 @@ export function AlignRoom({
     }
   }
 
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    processFiles(files);
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    processFiles(files);
+  }
+
+  function handleDragEnter(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    dragCounterRef.current++;
+    setIsDragging(true);
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) setIsDragging(false);
+  }
+
   function sendText(text: string) {
     const value = text.trim();
     const readyTextAtts = attachments.filter(
@@ -344,20 +381,17 @@ export function AlignRoom({
     if (!value && readyTextAtts.length === 0 && readyImageAtts.length === 0) return;
     if (loading) return;
 
-    // 文档附件内容作为文字前置上下文
-    const parts: string[] = [];
-    for (const att of readyTextAtts) {
-      parts.push(`【附件：${att.name}】\n${att.content}`);
-    }
-    if (value) parts.push(value);
-    const combined = parts.join("\n\n---\n\n");
-
     const imgCount = readyImageAtts.length;
     const userTurn: Turn = {
       id: nextId(),
       role: "user",
-      text: combined || (imgCount > 0 ? `（附图 ${imgCount} 张）` : ""),
+      // text 只存用户原始输入，文档内容单独存入 docs、不混入显示
+      text: value || (imgCount > 0 ? `（附图 ${imgCount} 张）` : ""),
       images: imgCount > 0 ? readyImageAtts.map((a) => a.dataUrl!) : undefined,
+      docs:
+        readyTextAtts.length > 0
+          ? readyTextAtts.map((a) => ({ name: a.name, content: a.content }))
+          : undefined,
     };
     const history = [...turns, userTurn];
     setTurns(history);
@@ -495,7 +529,21 @@ export function AlignRoom({
       </aside>
 
       {/* 右侧：对话区 */}
-      <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card">
+      <section
+        className="relative flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card"
+        onDrop={handleDrop}
+        onDragOver={(e) => e.preventDefault()}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+      >
+        {/* 拖拽放置 overlay */}
+        {isDragging && (
+          <div className="pointer-events-none absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-primary bg-primary/5 backdrop-blur-sm">
+            <Paperclip className="size-10 text-primary" />
+            <p className="text-sm font-medium text-primary">松开鼠标上传文件</p>
+            <p className="text-xs text-muted-foreground">支持图片、PDF、Word、TXT 等格式</p>
+          </div>
+        )}
         {/* 头部 */}
         <div className="flex flex-wrap items-center gap-2 border-b p-3">
           <div className="grid size-8 shrink-0 place-items-center rounded-full bg-primary/10">
@@ -622,6 +670,21 @@ export function AlignRoom({
                                 alt=""
                                 className="max-h-32 w-auto max-w-[180px] rounded-lg object-cover opacity-90"
                               />
+                            ))}
+                          </div>
+                        )}
+                        {(t.docs?.length ?? 0) > 0 && (
+                          <div className="mt-2 flex flex-col gap-1.5">
+                            {t.docs!.map((doc, idx) => (
+                              <button
+                                key={idx}
+                                onClick={() => setPreviewDoc(doc)}
+                                className="flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-white/20"
+                              >
+                                <FileText className="size-3.5 shrink-0 opacity-80" />
+                                <span className="min-w-0 flex-1 truncate font-medium">{doc.name}</span>
+                                <Eye className="size-3 shrink-0 opacity-60" />
+                              </button>
                             ))}
                           </div>
                         )}
@@ -841,6 +904,21 @@ export function AlignRoom({
         className="max-w-2xl"
       >
         <CompetitorResearchView loading={researching} result={research} />
+      </Dialog>
+
+      {/* 文档附件预览弹框 */}
+      <Dialog
+        open={!!previewDoc}
+        onClose={() => setPreviewDoc(null)}
+        title={previewDoc?.name ?? ""}
+        description="以下为从附件中提取的文字内容，已作为上下文发送给 AI。"
+        className="max-w-2xl"
+      >
+        <div className="max-h-[60vh] overflow-y-auto rounded-lg border bg-muted/30 p-4">
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+            {previewDoc?.content}
+          </pre>
+        </div>
       </Dialog>
     </div>
   );

@@ -54,13 +54,16 @@ export async function POST(req: Request) {
   if (mime === "application/pdf" || lname.endsWith(".pdf")) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
+      const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
+        buf: Buffer
+      ) => Promise<{ text: string }>;
       const buf = Buffer.from(await file.arrayBuffer());
       const { text } = await pdfParse(buf);
       const out = text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) + "\n…（内容过长已截断）" : text;
       return Response.json({ content: out.trim(), filename: name });
-    } catch {
-      return Response.json({ error: "PDF 解析失败，请确认文件未加密或损坏。" }, { status: 422 });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return Response.json({ error: `PDF 解析失败：${msg.slice(0, 120)}` }, { status: 422 });
     }
   }
 
