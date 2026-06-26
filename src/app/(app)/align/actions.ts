@@ -129,18 +129,33 @@ export async function clarifyConversation(input: {
     : "ai_product_manager";
   const agent = getAgent(roleKey);
 
-  const transcript = input.messages
-    .filter((m) => m.text.trim().length > 0 || (m.images?.length ?? 0) > 0)
-    .map((m) => {
-      const label = m.role === "user" ? "用户" : "AI";
-      const imgNote = (m.images?.length ?? 0) > 0 ? ` [附带 ${m.images!.length} 张图片]` : "";
-      return `${label}：${m.text}${imgNote}`;
-    })
-    .join("\n");
+  // 超长对话截断：只保留最近 12 轮，更早的提示已省略轮数，
+  // 避免 prompt 过大导致 Server Action 超时。
+  const MAX_TURNS = 12;
+  const validMessages = input.messages.filter(
+    (m) => m.text.trim().length > 0 || (m.images?.length ?? 0) > 0
+  );
+  const omittedCount =
+    validMessages.length > MAX_TURNS ? validMessages.length - MAX_TURNS : 0;
+  const recentMessages = omittedCount > 0
+    ? validMessages.slice(-MAX_TURNS)
+    : validMessages;
 
-  const allImages = input.messages
-    .filter((m) => m.role === "user" && (m.images?.length ?? 0) > 0)
-    .flatMap((m) => m.images ?? []);
+  const transcriptLines = recentMessages.map((m) => {
+    const label = m.role === "user" ? "用户" : "AI";
+    const imgNote = (m.images?.length ?? 0) > 0 ? ` [附带 ${m.images!.length} 张图片]` : "";
+    return `${label}：${m.text}${imgNote}`;
+  });
+  if (omittedCount > 0) {
+    transcriptLines.unshift(`（已省略更早的 ${omittedCount} 轮对话，以下为最近 ${MAX_TURNS} 轮）`);
+  }
+  const transcript = transcriptLines.join("\n");
+
+  // 只把最后一轮用户消息里的图片传给视觉模型（历史图片不重复传）
+  const lastUserMsg = [...recentMessages]
+    .reverse()
+    .find((m) => m.role === "user" && (m.images?.length ?? 0) > 0);
+  const allImages = lastUserMsg?.images ?? [];
 
   if (!transcript) {
     return {

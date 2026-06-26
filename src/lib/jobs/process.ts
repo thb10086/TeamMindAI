@@ -66,7 +66,13 @@ export async function processAsyncJob(jobId: string): Promise<void> {
       throw new Error(`未知作业类型：${job.type}`);
     }
   } catch (err) {
-    console.error(`[jobs] 作业 ${jobId}(${job.type}) 失败：`, (err as Error).message);
-    await markJobFailed(jobId, (err as Error).message);
+    const errMsg =
+      err instanceof Error
+        ? err.message
+        : typeof err === "string"
+          ? err
+          : (JSON.stringify(err) ?? "未知错误（non-Error rejection）");
+    console.error(`[jobs] 作业 ${jobId}(${job.type}) 失败：`, errMsg);
+    await markJobFailed(jobId, errMsg || "未知错误（空消息）");
   }
 }

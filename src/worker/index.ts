@@ -50,7 +50,14 @@ const jobWorker = new Worker(
     const { jobId } = job.data as AsyncJobRef;
     await processAsyncJob(jobId);
   },
-  { connection: redisConnectionOptions(), concurrency: 2 }
+  {
+    connection: redisConnectionOptions(),
+    concurrency: 2,
+    // AI 长任务（设计生成、会议处理）单任务最长可达 10 分钟，必须大于单屏 AI 调用超时。
+    lockDuration: 600_000,
+    // stall 检测间隔也要相应加长，否则 lockDuration 内仍会被触发多次 stall。
+    stalledInterval: 60_000,
+  }
 );
 jobWorker.on("ready", () =>
   console.log(`[worker] 已连接 Redis，监听队列「${JOB_QUEUE_NAME}」`)

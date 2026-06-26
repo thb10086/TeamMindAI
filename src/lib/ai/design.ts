@@ -5,6 +5,14 @@ import { getAgent } from "@/lib/ai/employees";
 import { generateStructured } from "@/lib/ai/structured";
 import { DesignPlanSchema, type DesignPlan } from "@/lib/ai/schemas";
 
+/** 单次 AI 调用最长等待时间（ms）。超时主动 abort，避免任务无限挂起。 */
+const AI_CALL_TIMEOUT_MS = 120_000; // 2 分钟
+
+/** 包装 AbortSignal 超时，用于传入 generateText abortSignal。 */
+function makeTimeoutSignal(ms = AI_CALL_TIMEOUT_MS): AbortSignal {
+  return AbortSignal.timeout(ms);
+}
+
 const DESIGNER = getAgent("ai_ux_designer");
 
 const DESIGN_PLAN_HINT = `{
@@ -81,6 +89,8 @@ ${others || "（无）"}
 
 # 所属需求
 ${opts.requirementText}${contextBlock}`,
+    maxOutputTokens: 4000,
+    abortSignal: makeTimeoutSignal(),
   });
   return sanitizeScreenHtml(text);
 }
@@ -105,6 +115,13 @@ export async function refineScreenHtml(opts: {
   const contextBlock = opts.projectContext
     ? `\n\n# 项目上下文（参考，不可臆造）\n${opts.projectContext}`
     : "";
+  // HTML 过长时截断：避免 refine prompt 超过上下文限制
+  const MAX_HTML_FOR_PROMPT = 8000;
+  const htmlForPrompt =
+    opts.currentHtml.length > MAX_HTML_FOR_PROMPT
+      ? opts.currentHtml.slice(0, MAX_HTML_FOR_PROMPT) + "\n<!-- ...（截断）-->"
+      : opts.currentHtml;
+
   const { text } = await generateText({
     model: agentllm(MODELS.chat),
     system: `${DESIGNER.systemPrompt}\n\n${HTML_RULES}`,
@@ -118,7 +135,7 @@ export async function refineScreenHtml(opts: {
 ${opts.feedback}
 
 # 当前界面的 HTML（在此基础上修改）
-${opts.currentHtml || "（当前为空，请重新生成）"}
+${htmlForPrompt || "（当前为空，请重新生成）"}
 
 # 设计方案概述
 ${opts.designSummary}
@@ -133,6 +150,8 @@ ${others || "（无）"}
 
 # 所属需求
 ${opts.requirementText}${contextBlock}`,
+    maxOutputTokens: 4000,
+    abortSignal: makeTimeoutSignal(),
   });
   return sanitizeScreenHtml(text);
 }
