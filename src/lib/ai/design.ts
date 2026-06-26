@@ -1,4 +1,4 @@
-import { generateText } from "ai";
+import { generateText, type ModelMessage } from "ai";
 
 import { agentllm, MODELS } from "@/lib/ai/provider";
 import { getAgent } from "@/lib/ai/employees";
@@ -8,9 +8,76 @@ import { DesignPlanSchema, type DesignPlan } from "@/lib/ai/schemas";
 /** 单次 AI 调用最长等待时间（ms）。超时主动 abort，避免任务无限挂起。 */
 const AI_CALL_TIMEOUT_MS = 120_000; // 2 分钟
 
+/** 单次调用最大输出 token（HTML 片段一轮）。 */
+const MAX_OUTPUT_TOKENS = 6000;
+
 /** 包装 AbortSignal 超时，用于传入 generateText abortSignal。 */
 function makeTimeoutSignal(ms = AI_CALL_TIMEOUT_MS): AbortSignal {
   return AbortSignal.timeout(ms);
+}
+
+/**
+ * Agentic 续写生成器——参考 Claude Code 的 multi-turn agent loop 设计：
+ *
+ * 1. 发起首次生成请求；
+ * 2. 若 finishReason === 'length'（max_tokens 截断），将已输出作为 assistant turn
+ *    追加到 message history，再请求续写，最多重试 maxContinuations 次；
+ * 3. finishReason === 'stop' 时返回拼接后的完整文本。
+ *
+ * 这样无论中间输出多长都能确保完整输出，同时每次单次属于独立调用、具备自己的 timeout。
+ */
+async function generateWithContinuation(opts: {
+  system: string;
+  initialMessages: ModelMessage[];
+  maxOutputTokens?: number;
+  maxContinuations?: number;
+  label?: string;
+}): Promise<string> {
+  const maxOut = opts.maxOutputTokens ?? MAX_OUTPUT_TOKENS;
+  const maxCont = opts.maxContinuations ?? 3;
+  const label = opts.label ?? "AI 调用";
+
+  let accumulated = "";
+  let messages: ModelMessage[] = [...opts.initialMessages];
+
+  for (let attempt = 0; attempt <= maxCont; attempt++) {
+    const result = await generateText({
+      model: agentllm(MODELS.chat),
+      system: opts.system,
+      messages,
+      maxOutputTokens: maxOut,
+      abortSignal: makeTimeoutSignal(),
+    });
+
+    accumulated += result.text;
+
+    if (result.finishReason !== "length") {
+      // 正常结束（stop / tool-calls / content-filter 等）
+      break;
+    }
+
+    if (attempt < maxCont) {
+      console.log(
+        `[design] ${label} 被 max_tokens 截断，续写 (${attempt + 1}/${maxCont})…`
+      );
+      // 把本轮输出追加为 assistant turn，再请求从中断处继续
+      messages = [
+        ...messages,
+        { role: "assistant", content: result.text },
+        {
+          role: "user",
+          content:
+            "请从上一条输出中断的地方直接继续输出，不要重复已有内容。",
+        },
+      ];
+    } else {
+      console.warn(
+        `[design] ${label} 达到续写上限 (${maxCont}次)，输出可能不完整。`
+      );
+    }
+  }
+
+  return accumulated;
 }
 
 const DESIGNER = getAgent("ai_ux_designer");
@@ -71,10 +138,7 @@ export async function generateScreenHtml(opts: {
   const contextBlock = opts.projectContext
     ? `\n\n# 项目上下文（参考，不可臆造）\n${opts.projectContext}`
     : "";
-  const { text } = await generateText({
-    model: agentllm(MODELS.chat),
-    system: `${DESIGNER.systemPrompt}\n\n${HTML_RULES}`,
-    prompt: `请为以下界面生成可交互的低保真原型 HTML 片段。
+  const prompt = `请为以下界面生成可交互的低保真原型 HTML 片段。
 
 # 设计方案概述
 ${opts.designSummary}
@@ -88,9 +152,12 @@ ${opts.designSummary}
 ${others || "（无）"}
 
 # 所属需求
-${opts.requirementText}${contextBlock}`,
-    maxOutputTokens: 4000,
-    abortSignal: makeTimeoutSignal(),
+${opts.requirementText}${contextBlock}`;
+
+  const text = await generateWithContinuation({
+    system: `${DESIGNER.systemPrompt}\n\n${HTML_RULES}`,
+    initialMessages: [{ role: "user", content: prompt }],
+    label: `界面 ${opts.screen.screenKey}`,
   });
   return sanitizeScreenHtml(text);
 }
@@ -122,10 +189,7 @@ export async function refineScreenHtml(opts: {
       ? opts.currentHtml.slice(0, MAX_HTML_FOR_PROMPT) + "\n<!-- ...（截断）-->"
       : opts.currentHtml;
 
-  const { text } = await generateText({
-    model: agentllm(MODELS.chat),
-    system: `${DESIGNER.systemPrompt}\n\n${HTML_RULES}`,
-    prompt: `请根据「用户反馈」调整下面这个界面的低保真原型 HTML。
+  const refinePrompt = `请根据「用户反馈」调整下面这个界面的低保真原型 HTML。
 重要约束：
 - 严格围绕「所属需求」，不得偏离已确认的需求范围与目标；反馈与需求冲突时以需求为准，并用「待确认：…」标注。
 - 只调整当前界面，保持与其它界面一致的视觉风格与跳转（data-goto）。
@@ -149,9 +213,12 @@ ${opts.designSummary}
 ${others || "（无）"}
 
 # 所属需求
-${opts.requirementText}${contextBlock}`,
-    maxOutputTokens: 4000,
-    abortSignal: makeTimeoutSignal(),
+${opts.requirementText}${contextBlock}`;
+
+  const text = await generateWithContinuation({
+    system: `${DESIGNER.systemPrompt}\n\n${HTML_RULES}`,
+    initialMessages: [{ role: "user", content: refinePrompt }],
+    label: `refine ${opts.screen.screenKey}`,
   });
   return sanitizeScreenHtml(text);
 }

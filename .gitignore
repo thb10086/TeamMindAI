@@ -41,3 +41,6 @@ yarn-error.log*
 # editor
 .idea
 *.iml
+
+# 本地参考仓库（不提交）
+/refs/
