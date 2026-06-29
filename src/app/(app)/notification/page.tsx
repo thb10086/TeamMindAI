@@ -4,8 +4,17 @@ import { NotificationCenter } from "./notification-center";
 
 export const metadata = { title: "通知中心 · TeamMindAI" };
 
-export default async function NotificationPage() {
+type TabKey = "all" | "unread" | "needsConfirm";
+
+export default async function NotificationPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ filter?: string }>;
+}) {
   const user = await requireUser();
+  const { filter } = await searchParams;
+  const initialTab: TabKey =
+    filter === "unread" || filter === "needsConfirm" ? filter : "all";
   const items = await listNotifications(user.id, "all", 200);
 
   const data = items.map((n) => ({
@@ -21,5 +30,5 @@ export default async function NotificationPage() {
     createdAt: n.createdAt.toISOString(),
   }));
 
-  return <NotificationCenter items={data} />;
+  return <NotificationCenter items={data} initialTab={initialTab} />;
 }

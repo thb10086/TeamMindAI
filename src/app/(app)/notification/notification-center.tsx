@@ -99,8 +99,14 @@ function targetHref(n: NotificationVM): string | null {
   return null;
 }
 
-export function NotificationCenter({ items }: { items: NotificationVM[] }) {
-  const [tab, setTab] = useState<TabKey>("all");
+export function NotificationCenter({
+  items,
+  initialTab = "all",
+}: {
+  items: NotificationVM[];
+  initialTab?: TabKey;
+}) {
+  const [tab, setTab] = useState<TabKey>(initialTab);
   const [pending, startTransition] = useTransition();
 
   const unreadCount = useMemo(
