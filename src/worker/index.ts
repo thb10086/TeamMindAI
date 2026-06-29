@@ -9,6 +9,12 @@ import { ingestSource } from "@/lib/memory/ingest";
 import { rebuildCommunities } from "@/lib/memory/community";
 import { JOB_QUEUE_NAME, type AsyncJobRef } from "@/lib/queue/job-queue";
 import { processAsyncJob } from "@/lib/jobs/process";
+import {
+  MAINTENANCE_QUEUE_NAME,
+  SWEEP_OVERDUE_JOB,
+  registerMaintenanceSchedules,
+} from "@/lib/queue/maintenance-queue";
+import { sweepOverdueTasks } from "@/lib/jobs/overdue-tasks";
 
 /**
  * 记忆沉淀 worker：消费 memory-ingest 队列，执行图抽取入库，
@@ -72,12 +78,47 @@ jobWorker.on("error", (err) =>
   console.error("[worker] async-jobs 连接/运行错误：", err.message)
 );
 
+/**
+ * 维护 worker：消费 maintenance 队列的定时作业（如逾期任务自动转 DELAYED）。
+ * 定时调度由 registerMaintenanceSchedules() 注册的 BullMQ repeatable job 驱动。
+ */
+const maintenanceWorker = new Worker(
+  MAINTENANCE_QUEUE_NAME,
+  async (job) => {
+    if (job.name === SWEEP_OVERDUE_JOB) {
+      return await sweepOverdueTasks();
+    }
+    return { skipped: job.name };
+  },
+  { connection: redisConnectionOptions(), concurrency: 1 }
+);
+maintenanceWorker.on("ready", () =>
+  console.log(`[worker] 已连接 Redis，监听队列「${MAINTENANCE_QUEUE_NAME}」`)
+);
+maintenanceWorker.on("completed", (job, result) =>
+  console.log(`[worker] maintenance ${job.name} 完成：`, result)
+);
+maintenanceWorker.on("failed", (job, err) =>
+  console.error(`[worker] maintenance ${job?.name} 失败：`, err?.message)
+);
+maintenanceWorker.on("error", (err) =>
+  console.error("[worker] maintenance 连接/运行错误：", err.message)
+);
+
+void registerMaintenanceSchedules()
+  .then(() => console.log("[worker] 已注册定时作业：逾期任务扫描"))
+  .catch((err) =>
+    console.error("[worker] 注册定时作业失败：", (err as Error).message)
+  );
+
 async function shutdown(signal: string) {
   console.log(`[worker] 收到 ${signal}，正在优雅关闭…`);
-  await Promise.all([worker.close(), jobWorker.close()]);
+  await Promise.all([worker.close(), jobWorker.close(), maintenanceWorker.close()]);
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-console.log("[worker] worker 启动中（memory-ingest + async-jobs）…");
+console.log(
+  "[worker] worker 启动中（memory-ingest + async-jobs + maintenance）…"
+);

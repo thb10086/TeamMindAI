@@ -10,6 +10,7 @@ import {
   FileText,
   KanbanSquare,
   AlertTriangle,
+  Clock,
   Rocket,
   UserPlus,
   Inbox,
@@ -55,6 +56,10 @@ const TYPE_META: Record<
   TASK_BLOCKED: {
     icon: AlertTriangle,
     tone: "bg-red-100 text-red-600 dark:bg-red-950/40 dark:text-red-300",
+  },
+  TASK_DELAYED: {
+    icon: Clock,
+    tone: "bg-orange-100 text-orange-600 dark:bg-orange-950/40 dark:text-orange-300",
   },
   REQUIREMENT_CONFIRMED: {
     icon: FileText,

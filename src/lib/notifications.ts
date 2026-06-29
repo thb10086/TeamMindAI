@@ -13,6 +13,7 @@ import { prisma } from "@/lib/db";
 export type NotificationType =
   | "TASK_ASSIGNED" // 任务被指派给你
   | "TASK_BLOCKED" // 你负责的任务被标记阻塞
+  | "TASK_DELAYED" // 你负责的任务逾期被自动标记为延期
   | "REQUIREMENT_CONFIRMED" // 你提的/负责的需求评审通过
   | "REQUIREMENT_ONLINE" // 你负责的需求已上线
   | "PROJECT_MEMBER_ADDED"; // 你被加入某项目
