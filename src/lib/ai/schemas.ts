@@ -323,6 +323,50 @@ export const MeetingMinutesSchema = z.object({
 });
 export type MeetingMinutes = z.infer<typeof MeetingMinutesSchema>;
 
+// ============================================================
+// 项目报告（AI 项目经理：基于真实数据的结构化周报/健康报告）
+// ============================================================
+
+/** 报告中的风险/阻塞条目（含影响与应对建议）。 */
+export const ReportRiskSchema = z.object({
+  title: z.string().describe("风险/阻塞/延期事项（须对应事实数据，不得编造）"),
+  impact: z.string().default("").describe("对进度/交付的影响（1 句）"),
+  suggestion: z.string().default("").describe("应对/缓解建议（可执行）"),
+});
+export type ReportRisk = z.infer<typeof ReportRiskSchema>;
+
+/** 项目报告结构化结果（AI 项目经理输出，须严格基于提供的事实数据）。 */
+export const ProjectReportSchema = z.object({
+  overview: z
+    .string()
+    .describe("本期整体进展概述（3-5 句），用数据说话，客观不浮夸"),
+  highlights: z
+    .array(z.string())
+    .default([])
+    .describe("本期完成项与亮点（基于已完成任务、上线需求）"),
+  inProgress: z
+    .array(z.string())
+    .default([])
+    .describe("进行中的关键事项"),
+  risks: z
+    .array(ReportRiskSchema)
+    .default([])
+    .describe("延期/阻塞/风险清单及应对建议；无则空数组"),
+  nextPlan: z
+    .array(z.string())
+    .default([])
+    .describe("下阶段计划（基于临期任务、待排期/待评审需求）"),
+  managementAdvice: z
+    .array(z.string())
+    .default([])
+    .describe("给管理者的具体、可执行建议；区分事实与建议"),
+  healthScore: z.coerce
+    .number()
+    .describe("项目健康评分 0-100（综合进度、阻塞、延期、临期压力）"),
+  healthReason: z.string().default("").describe("评分理由（1-2 句）"),
+});
+export type ProjectReport = z.infer<typeof ProjectReportSchema>;
+
 /** 说话人分段（diarization）：基于 Whisper 转写片段 + 参会人，用 LLM 归属发言人。 */
 export const DiarizedTurnSchema = z.object({
   speaker: z
