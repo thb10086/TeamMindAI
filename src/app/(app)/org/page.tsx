@@ -28,5 +28,5 @@ export default async function OrgPage() {
     listDepartments(me.companyId),
   ]);
 
-  return <OrgManager users={users} departments={departments} />;
+  return <OrgManager users={users} departments={departments} meId={me.id} />;
 }

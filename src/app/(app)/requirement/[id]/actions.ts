@@ -12,6 +12,7 @@ import {
 import { prisma } from "@/lib/db";
 import { requireUser } from "@/lib/auth-helpers";
 import { requireFullUser, canLeadProject } from "@/lib/access";
+import { createNotifications } from "@/lib/notifications";
 
 export interface BreakdownResult {
   jobId?: string;
@@ -114,6 +115,9 @@ export async function confirmRequirement(
       status: true,
       openQuestions: true,
       title: true,
+      proposerId: true,
+      ownerId: true,
+      project: { select: { name: true } },
     },
   });
   if (!req) return { error: "无权访问该需求或需求不存在。" };
@@ -139,7 +143,24 @@ export async function confirmRequirement(
       detail: { title: req.title },
     },
   });
+
+  // 通知需求提出人/负责人（非操作者本人）：需求已评审通过，进入排期。
+  const confirmRecipients = Array.from(
+    new Set([req.proposerId, req.ownerId].filter((id): id is string => Boolean(id)))
+  ).filter((id) => id !== user.id);
+  await createNotifications(
+    confirmRecipients.map((receiverId) => ({
+      notificationType: "REQUIREMENT_CONFIRMED" as const,
+      title: "需求已评审通过",
+      content: `项目「${req.project.name}」的需求「${req.title}」已确认，可进入任务拆解与排期。`,
+      receiverId,
+      projectId: req.projectId,
+      requirementId: req.id,
+    }))
+  );
+
   revalidatePath(`/requirement/${req.id}`);
+  revalidatePath("/notification");
   revalidatePath(`/project/${req.projectId}`);
   return { ok: true };
 }
@@ -157,7 +178,15 @@ export async function markRequirementOnline(
       id: requirementId,
       project: { members: { some: { userId: user.id } } },
     },
-    select: { id: true, projectId: true, status: true, title: true },
+    select: {
+      id: true,
+      projectId: true,
+      status: true,
+      title: true,
+      proposerId: true,
+      ownerId: true,
+      project: { select: { name: true } },
+    },
   });
   if (!req) return { error: "无权访问该需求或需求不存在。" };
   if (!(await canLeadProject(req.projectId, user))) {
@@ -185,7 +214,24 @@ export async function markRequirementOnline(
     requirementId: req.id,
     title: req.title,
   });
+
+  // 通知需求提出人/负责人（非操作者本人）：需求已上线。
+  const onlineRecipients = Array.from(
+    new Set([req.proposerId, req.ownerId].filter((id): id is string => Boolean(id)))
+  ).filter((id) => id !== user.id);
+  await createNotifications(
+    onlineRecipients.map((receiverId) => ({
+      notificationType: "REQUIREMENT_ONLINE" as const,
+      title: "需求已上线",
+      content: `项目「${req.project.name}」的需求「${req.title}」已标记上线。`,
+      receiverId,
+      projectId: req.projectId,
+      requirementId: req.id,
+    }))
+  );
+
   revalidatePath(`/requirement/${req.id}`);
+  revalidatePath("/notification");
   revalidatePath(`/project/${req.projectId}`);
   return { ok: true };
 }

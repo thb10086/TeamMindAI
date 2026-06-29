@@ -1,8 +1,10 @@
+import Link from "next/link";
 import { Bell, LogOut, Plus, Search } from "lucide-react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { Button } from "@/components/ui/button";
 import { requireFullUser } from "@/lib/access";
+import { countUnread } from "@/lib/notifications";
 import { logoutAction } from "@/app/login/actions";
 
 export default async function AppLayout({
@@ -12,6 +14,7 @@ export default async function AppLayout({
 }) {
   const user = await requireFullUser();
   const initial = (user.name ?? "U").trim().charAt(0).toUpperCase();
+  const unread = await countUnread(user.id);
 
   return (
     <div className="flex min-h-screen bg-muted/20">
@@ -30,8 +33,15 @@ export default async function AppLayout({
               <Plus className="size-4" />
               创建需求
             </Button>
-            <Button size="sm" variant="ghost">
-              <Bell className="size-4" />
+            <Button size="sm" variant="ghost" asChild>
+              <Link href="/notification" className="relative" title="通知中心">
+                <Bell className="size-4" />
+                {unread > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 grid min-w-4 place-items-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-4 text-white">
+                    {unread > 99 ? "99+" : unread}
+                  </span>
+                )}
+              </Link>
             </Button>
             <div className="flex items-center gap-2 pl-1">
               <div className="grid size-8 place-items-center rounded-full bg-primary/10 text-sm font-medium text-primary">

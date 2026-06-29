@@ -1,20 +1,25 @@
-import { PagePlaceholder } from "@/components/page-placeholder";
+import { requireUser } from "@/lib/auth-helpers";
+import { listNotifications } from "@/lib/notifications";
+import { NotificationCenter } from "./notification-center";
 
 export const metadata = { title: "通知中心 · TeamMindAI" };
 
-export default function NotificationPage() {
-  return (
-    <PagePlaceholder
-      title="通知中心"
-      description="统一展示站内信、邮件、企业微信等通知，支持待确认与发送状态跟踪。"
-      features={[
-        "通知 Tabs（全部/未读/待确认/已发送/失败）",
-        "需求待确认/任务分配/延期提醒",
-        "邮件模板配置",
-        "通知规则引擎",
-        "失败重试与发送日志",
-        "重要通知人工确认后发送",
-      ]}
-    />
-  );
+export default async function NotificationPage() {
+  const user = await requireUser();
+  const items = await listNotifications(user.id, "all", 200);
+
+  const data = items.map((n) => ({
+    id: n.id,
+    notificationType: n.notificationType,
+    title: n.title,
+    content: n.content,
+    projectId: n.projectId,
+    requirementId: n.requirementId,
+    taskId: n.taskId,
+    status: n.status,
+    needsConfirm: n.needsConfirm,
+    createdAt: n.createdAt.toISOString(),
+  }));
+
+  return <NotificationCenter items={data} />;
 }

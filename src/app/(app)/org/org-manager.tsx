@@ -6,6 +6,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useTransition,
   type ReactNode,
 } from "react";
 import {
@@ -17,6 +18,9 @@ import {
   ShieldCheck,
   UserCheck,
   Inbox,
+  Pencil,
+  KeyRound,
+  Trash2,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -30,6 +34,10 @@ import {
 import {
   createUserAction,
   createDepartmentAction,
+  updateUserAction,
+  resetUserPasswordAction,
+  renameDepartmentAction,
+  deleteDepartmentAction,
   type ActionState,
 } from "../settings/actions";
 
@@ -74,14 +82,18 @@ function avatarColor(seed: string): string {
 export function OrgManager({
   users,
   departments,
+  meId,
 }: {
   users: UserVM[];
   departments: DeptVM[];
+  meId: string;
 }) {
   const [selectedNode, setSelectedNode] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [userOpen, setUserOpen] = useState(false);
   const [deptOpen, setDeptOpen] = useState(false);
+  const [editUser, setEditUser] = useState<UserVM | null>(null);
+  const [manageDept, setManageDept] = useState<DeptVM | null>(null);
 
   const stats = useMemo(() => {
     const active = users.filter((u) => u.isActive).length;
@@ -148,8 +160,15 @@ export function OrgManager({
 
   const closeUser = useCallback(() => setUserOpen(false), []);
   const closeDept = useCallback(() => setDeptOpen(false), []);
+  const closeEdit = useCallback(() => setEditUser(null), []);
+  const closeManageDept = useCallback(() => setManageDept(null), []);
 
   const roots = childrenOf.get("ROOT") ?? [];
+
+  const selectedDept =
+    selectedNode !== "all" && selectedNode !== "none"
+      ? (departments.find((d) => d.id === selectedNode) ?? null)
+      : null;
 
   function renderNode(dept: DeptVM): ReactNode {
     const kids = childrenOf.get(dept.id) ?? [];
@@ -278,6 +297,16 @@ export function OrgManager({
             <span className="text-muted-foreground text-xs">
               {members.length} 人
             </span>
+            {selectedDept && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setManageDept(selectedDept)}
+              >
+                <Pencil className="size-3" /> 管理部门
+              </Button>
+            )}
             <div className="relative ml-auto">
               <Search className="text-muted-foreground absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2" />
               <input
@@ -341,6 +370,17 @@ export function OrgManager({
                     <span className="text-muted-foreground shrink-0 rounded-full border px-2 py-0.5 text-[11px]">
                       {u.department ? u.department.name : "未分配"}
                     </span>
+                    {u.systemRole !== "SUPER_ADMIN" && u.id !== meId && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 shrink-0"
+                        title="编辑成员"
+                        onClick={() => setEditUser(u)}
+                      >
+                        <Pencil className="size-4" />
+                      </Button>
+                    )}
                   </div>
                 );
               })}
@@ -371,6 +411,34 @@ export function OrgManager({
         description="可选择上级部门以形成层级。"
       >
         <AddDeptForm departments={departments} onSuccess={closeDept} />
+      </Dialog>
+
+      {/* 编辑成员弹框 */}
+      <Dialog
+        open={editUser !== null}
+        onClose={closeEdit}
+        title="编辑成员"
+        description="调整资料、角色、部门与启停用，或重置登录密码。"
+      >
+        {editUser && (
+          <EditUserForm
+            user={editUser}
+            departments={departments}
+            onSuccess={closeEdit}
+          />
+        )}
+      </Dialog>
+
+      {/* 管理部门弹框 */}
+      <Dialog
+        open={manageDept !== null}
+        onClose={closeManageDept}
+        title="管理部门"
+        description="重命名部门，或在无成员、无子部门时删除。"
+      >
+        {manageDept && (
+          <ManageDeptForm dept={manageDept} onSuccess={closeManageDept} />
+        )}
       </Dialog>
     </div>
   );
@@ -552,6 +620,255 @@ function AddDeptForm({
       <div className="flex justify-end pt-1">
         <Button type="submit" disabled={pending}>
           {pending ? "创建中…" : "创建部门"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function EditUserForm({
+  user,
+  departments,
+  onSuccess,
+}: {
+  user: UserVM;
+  departments: DeptVM[];
+  onSuccess: () => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [pwd, setPwd] = useState("");
+  const [pwdMsg, setPwdMsg] = useState<string | null>(null);
+
+  const [displayName, setDisplayName] = useState(
+    user.displayName || user.name || ""
+  );
+  const [email, setEmail] = useState(user.email ?? "");
+  const [systemRole, setSystemRole] = useState(user.systemRole);
+  const [departmentId, setDepartmentId] = useState(user.department?.id ?? "");
+  const [isActive, setIsActive] = useState(user.isActive);
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    startTransition(async () => {
+      const res = await updateUserAction({
+        userId: user.id,
+        displayName,
+        email,
+        systemRole,
+        departmentId,
+        isActive,
+      });
+      if (res.ok) onSuccess();
+      else setError(res.error ?? "保存失败");
+    });
+  };
+
+  const onReset = () => {
+    setPwdMsg(null);
+    startTransition(async () => {
+      const res = await resetUserPasswordAction({
+        userId: user.id,
+        password: pwd,
+      });
+      if (res.ok) {
+        setPwdMsg("密码已重置");
+        setPwd("");
+        setResetting(false);
+      } else {
+        setPwdMsg(res.error ?? "重置失败");
+      }
+    });
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-3">
+      <div className="text-muted-foreground text-xs">账号 @{user.username}</div>
+      <div className="grid grid-cols-2 gap-3">
+        <input
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          placeholder="姓名"
+          className={fieldClass}
+          required
+        />
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          type="email"
+          placeholder="邮箱（可选）"
+          className={fieldClass}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <select
+          value={systemRole}
+          onChange={(e) => setSystemRole(e.target.value)}
+          className={fieldClass}
+        >
+          {SYSTEM_ROLE_VALUES.map((r) => (
+            <option key={r} value={r}>
+              {SYSTEM_ROLE_LABEL[r]}
+            </option>
+          ))}
+        </select>
+        <select
+          value={departmentId}
+          onChange={(e) => setDepartmentId(e.target.value)}
+          className={fieldClass}
+        >
+          <option value="">无部门</option>
+          {departments.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={isActive}
+          onChange={(e) => setIsActive(e.target.checked)}
+        />
+        账号启用（取消勾选将停用，停用后无法登录）
+      </label>
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
+
+      <div className="flex items-center justify-between border-t pt-3">
+        {resetting ? (
+          <div className="flex items-center gap-2">
+            <input
+              value={pwd}
+              onChange={(e) => setPwd(e.target.value)}
+              type="password"
+              placeholder="新密码（≥6 位）"
+              className="h-9 w-40 rounded-md border bg-background px-2 text-sm outline-none focus:border-primary"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={pending || pwd.length < 6}
+              onClick={onReset}
+            >
+              确认重置
+            </Button>
+            <button
+              type="button"
+              className="text-muted-foreground text-xs hover:underline"
+              onClick={() => {
+                setResetting(false);
+                setPwd("");
+              }}
+            >
+              取消
+            </button>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => {
+              setResetting(true);
+              setPwdMsg(null);
+            }}
+          >
+            <KeyRound className="size-4" /> 重置密码
+          </Button>
+        )}
+        <Button type="submit" disabled={pending}>
+          {pending ? "保存中…" : "保存"}
+        </Button>
+      </div>
+      {pwdMsg && <p className="text-xs text-muted-foreground">{pwdMsg}</p>}
+    </form>
+  );
+}
+
+function ManageDeptForm({
+  dept,
+  onSuccess,
+}: {
+  dept: DeptVM;
+  onSuccess: () => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [name, setName] = useState(dept.name);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const onRename = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    startTransition(async () => {
+      const res = await renameDepartmentAction({
+        departmentId: dept.id,
+        name,
+      });
+      if (res.ok) onSuccess();
+      else setError(res.error ?? "保存失败");
+    });
+  };
+
+  const onDelete = () => {
+    setError(null);
+    startTransition(async () => {
+      const res = await deleteDepartmentAction({ departmentId: dept.id });
+      if (res.ok) onSuccess();
+      else setError(res.error ?? "删除失败");
+    });
+  };
+
+  return (
+    <form onSubmit={onRename} className="space-y-3">
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="部门名称"
+        className={fieldClass}
+        required
+      />
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      <div className="flex items-center justify-between border-t pt-3">
+        {confirmDelete ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-red-600">确认删除该部门？</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={onDelete}
+            >
+              确认
+            </Button>
+            <button
+              type="button"
+              className="text-muted-foreground text-xs hover:underline"
+              onClick={() => setConfirmDelete(false)}
+            >
+              取消
+            </button>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-red-600 hover:text-red-700"
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 className="size-4" /> 删除部门
+          </Button>
+        )}
+        <Button type="submit" disabled={pending}>
+          {pending ? "保存中…" : "保存名称"}
         </Button>
       </div>
     </form>

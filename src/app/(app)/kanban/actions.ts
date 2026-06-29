@@ -10,6 +10,7 @@ import { canLeadProject, requireFullUser } from "@/lib/access";
 import { recomputeRequirementStatusFromTasks } from "@/lib/lifecycle";
 import { feedbackTaskProgress } from "@/lib/memory/feedback";
 import { userDisplayName } from "@/lib/org";
+import { createNotification } from "@/lib/notifications";
 
 const TASK_STATUSES = [
   "TODO",
@@ -89,8 +90,10 @@ export async function updateTaskStatus(
       requirementId: true,
       status: true,
       title: true,
+      assigneeId: true,
       assignee: { select: { displayName: true, name: true, username: true } },
       requirement: { select: { title: true } },
+      project: { select: { name: true } },
     },
   });
   if (!task) return { error: "无权操作该任务或任务不存在。" };
@@ -128,7 +131,24 @@ export async function updateTaskStatus(
     requirementTitle: task.requirement?.title ?? null,
   });
 
+  // 任务转入阻塞 → 提醒负责人（非操作者本人）协调解除。
+  if (
+    status === "BLOCKED" &&
+    task.assigneeId &&
+    task.assigneeId !== user.id
+  ) {
+    await createNotification({
+      notificationType: "TASK_BLOCKED",
+      title: "任务被标记为阻塞",
+      content: `任务「${task.title}」在项目「${task.project.name}」被标记为阻塞，请尽快协调解除。`,
+      receiverId: task.assigneeId,
+      projectId: task.projectId,
+      taskId: task.id,
+    });
+  }
+
   revalidatePath("/kanban");
+  revalidatePath("/notification");
   revalidatePath(`/task/${task.id}`);
   revalidatePath(`/project/${task.projectId}`);
   return { ok: true };
@@ -155,7 +175,13 @@ export async function assignTask(input: {
       id: input.taskId,
       project: { members: { some: { userId: user.id } } },
     },
-    select: { id: true, projectId: true, assigneeId: true, title: true },
+    select: {
+      id: true,
+      projectId: true,
+      assigneeId: true,
+      title: true,
+      project: { select: { name: true } },
+    },
   });
   if (!task) return { error: "无权操作该任务或任务不存在。" };
 
@@ -193,9 +219,24 @@ export async function assignTask(input: {
         detail: { from: task.assigneeId, to: input.assigneeId, title: task.title },
       },
     });
+
+    // 通知新负责人（非操作者本人）：你被指派了任务。
+    if (input.assigneeId && input.assigneeId !== user.id) {
+      await createNotification({
+        notificationType: "TASK_ASSIGNED",
+        title: "你被指派了新任务",
+        content: `项目「${task.project.name}」的任务「${task.title}」已指派给你${
+          input.dueTime ? `，截止 ${input.dueTime}` : ""
+        }。`,
+        receiverId: input.assigneeId,
+        projectId: task.projectId,
+        taskId: task.id,
+      });
+    }
   }
 
   revalidatePath("/kanban");
+  revalidatePath("/notification");
   revalidatePath(`/task/${task.id}`);
   revalidatePath(`/project/${task.projectId}`);
   return { ok: true };
@@ -221,11 +262,18 @@ export async function assignTasksBatch(input: {
   }
 
   const taskIds = input.assignments.map((a) => a.taskId);
-  const tasks = await prisma.task.findMany({
-    where: { id: { in: taskIds }, projectId: input.projectId },
-    select: { id: true, assigneeId: true, title: true },
-  });
+  const [tasks, project] = await Promise.all([
+    prisma.task.findMany({
+      where: { id: { in: taskIds }, projectId: input.projectId },
+      select: { id: true, assigneeId: true, title: true },
+    }),
+    prisma.project.findUnique({
+      where: { id: input.projectId },
+      select: { name: true },
+    }),
+  ]);
   const taskMap = new Map(tasks.map((t) => [t.id, t]));
+  const projectName = project?.name ?? "项目";
 
   const assigneeIds = Array.from(
     new Set(
@@ -269,9 +317,22 @@ export async function assignTasksBatch(input: {
         },
       },
     });
+
+    // 通知被指派人（非操作者本人）。
+    if (a.assigneeId && a.assigneeId !== user.id) {
+      await createNotification({
+        notificationType: "TASK_ASSIGNED",
+        title: "你被指派了新任务",
+        content: `项目「${projectName}」的任务「${t.title}」已指派给你。`,
+        receiverId: a.assigneeId,
+        projectId: input.projectId,
+        taskId: a.taskId,
+      });
+    }
   }
 
   revalidatePath("/kanban");
+  revalidatePath("/notification");
   revalidatePath(`/project/${input.projectId}`);
   return { assigned };
 }
@@ -326,7 +387,7 @@ export async function createTask(
 
   const project = await prisma.project.findFirst({
     where: { id: input.projectId, members: { some: { userId: user.id } } },
-    select: { id: true },
+    select: { id: true, name: true },
   });
   if (!project) return { error: "无权访问该项目或项目不存在。" };
   if (!(await canLeadProject(input.projectId, user))) {
@@ -414,12 +475,25 @@ export async function createTask(
     },
   });
 
+  // 新建即指派给他人时，通知负责人。
+  if (assigneeId && assigneeId !== user.id) {
+    await createNotification({
+      notificationType: "TASK_ASSIGNED",
+      title: "你被指派了新任务",
+      content: `项目「${project.name}」的任务「${title}」已指派给你。`,
+      receiverId: assigneeId,
+      projectId: input.projectId,
+      taskId: task.id,
+    });
+  }
+
   // 关联需求时联动需求/项目状态（仅在执行阶段生效，不会回退人工决策）
   if (requirementId) {
     await recomputeRequirementStatusFromTasks(requirementId);
     revalidatePath(`/requirement/${requirementId}`);
   }
   revalidatePath("/kanban");
+  revalidatePath("/notification");
   revalidatePath(`/project/${input.projectId}`);
   return { ok: true, taskId: task.id };
 }

@@ -6,7 +6,8 @@ import type { SystemRole } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
 import { requireFullUser, canManageProjectMembers } from "@/lib/access";
-import { PROJECT_ROLE_VALUES } from "@/lib/labels";
+import { PROJECT_ROLE_VALUES, SYSTEM_ROLE_LABEL } from "@/lib/labels";
+import { createNotification } from "@/lib/notifications";
 
 export interface MemberActionState {
   error?: string;
@@ -56,10 +57,17 @@ export async function addProjectMemberAction(input: {
     return { error: "无权限管理该项目成员" };
   }
 
-  const target = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { companyId: true },
-  });
+  const [target, existing, project] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { companyId: true } }),
+    prisma.projectMember.findUnique({
+      where: { projectId_userId: { projectId, userId } },
+      select: { userId: true },
+    }),
+    prisma.project.findUnique({
+      where: { id: projectId },
+      select: { name: true },
+    }),
+  ]);
   if (!target) return { error: "用户不存在" };
   if (me.companyId && target.companyId !== me.companyId) {
     return { error: "不能添加其它公司的用户" };
@@ -71,6 +79,21 @@ export async function addProjectMemberAction(input: {
     create: { projectId, userId, role: role as SystemRole },
   });
   await syncOwnerFields(projectId);
+
+  // 仅在「新加入」时通知本人（非操作者自己）；纯改角色不重复打扰。
+  if (!existing && userId !== me.id) {
+    await createNotification({
+      notificationType: "PROJECT_MEMBER_ADDED",
+      title: "你被加入了新项目",
+      content: `你已被加入项目「${project?.name ?? "项目"}」，项目角色：${
+        SYSTEM_ROLE_LABEL[role] ?? role
+      }。`,
+      receiverId: userId,
+      projectId,
+    });
+    revalidatePath("/notification");
+  }
+
   revalidatePath(`/project/${projectId}`);
   return { ok: true };
 }
